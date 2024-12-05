@@ -1,5 +1,70 @@
+/* Add these at the top of your App.css */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  min-height: 100vh;
+  background-color: #1a1b1e;
+}
+
+/* Base styles */
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #1a1b1e;
+  color: #e0e0e0;
+  font-family: 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  min-height: 100vh;
+}
+
 .App {
+  min-height: 100vh;
+  padding: 20px 0;
+  background-color: #1a1b1e;
+}
+
+/* Container */
+.App > div {
+  max-width: 1000px;
+  margin: 20px auto;
+  padding: 0 20px;
+}
+
+/* Headers */
+h1 {
   text-align: center;
+  color: #00ffbb;
+  margin-bottom: 30px;
+  font-size: 2.5em;
+  text-shadow: 0 0 10px rgba(0,255,187,0.3);
+}
+
+h3 {
+  text-align: center;
+  color: #8b8b8d;
+  margin-bottom: 30px;
+  font-weight: normal;
+  font-size: 1.2em;
+  letter-spacing: 0.5px;
+}
+
+/* Input and Button */
+input {
+  width: 400px;
+  margin-right: 10px;
+  padding: 12px;
+  background-color: #2a2b2e;
+  border: 1px solid #3a3b3e;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-size: 1em;
+}
+
+button {
+  padding: 12px 24px;
 }
 
 .App-logo {
