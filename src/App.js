@@ -1,5 +1,22 @@
 import React, { useState } from 'react';
-import { fetchTopHolders, fetchTransactions, TIME_RANGES } from './api';
+import { BrowserRouter as Router, Route, Switch, Link, useLocation } from 'react-router-dom';
+import { fetchTopHolders, fetchTransactions, knownDEXAddresses } from './api';
+import { formatAddress } from './utils/formatting';
+import GigaDegens from './components/GigaDegens';
+import { SMALL_TRADE_THRESHOLD, HIGH_VALUE_THRESHOLD, TIME_RANGES } from './constants';
+import './App.css';
+
+const getVolatilityLevel = (intensity) => {
+  if (intensity > 0.1) return 'high';
+  if (intensity > 0.05) return 'medium';
+  return 'low';
+};
+
+const getVolatilityDescription = (intensity) => {
+  if (intensity > 0.1) return ' (High volatility)';
+  if (intensity > 0.05) return ' (Moderate activity)';
+  return ' (Stable trading)';
+};
 
 const calculateStatistics = (holders = [], transactions = []) => {
   const determineTradingSignal = (buyPressure, holdingsPercentage) => {
@@ -7,13 +24,6 @@ const calculateStatistics = (holders = [], transactions = []) => {
     const totalHoldingsPercentage = parseFloat(holdingsPercentage.percentOfHoldingsBought) + 
                                    parseFloat(holdingsPercentage.percentOfHoldingsSold);
     
-    console.log('Trading Signal Debug:', {
-      buyPressure,
-      totalHoldingsPercentage,
-      holdingsPercentage
-    });
-    
-    // Convert from string percentages to decimals for comparison
     if (totalHoldingsPercentage < (SIGNIFICANT_TRADING * 100)) {
       return {
         signal: 'NEUTRAL',
@@ -49,37 +59,29 @@ const calculateStatistics = (holders = [], transactions = []) => {
   }
 
   const tokenSymbol = holders[0]?.Currency?.Symbol || 'tokens';
-
   const stats = {
     tokenSymbol,
-    totalHoldings: 0,
+    totalHolders: holders.length,
     totalBuyVolume24h: 0,
     totalSellVolume24h: 0,
     totalVolume24h: 0,
+    volume: 0,
     uniqueBuyers: new Set(),
     uniqueSellers: new Set(),
-    volumeBreakdown: {
-      buys: '0',
-      sells: '0'
-    },
+    volumeBreakdown: { buys: '0', sells: '0' },
     tradingActivity: {
       percentOfHoldingsBought: '0',
       percentOfHoldingsSold: '0',
       averageBuyerPercentage: '0',
       averageSellerPercentage: '0'
     },
-    tradingMomentum: {
-      buyPressure: '0',
-      signal: 'NEUTRAL'
-    },
-    riskMetrics: {
-      holderConcentration: 0,
-      tradingIntensity: 0
-    },
-    significantTrades: []
+    tradingMomentum: { buyPressure: '0', signal: 'NEUTRAL' },
+    tradingSignal: {
+      signal: 'NEUTRAL',
+      description: 'No trading activity'
+    }
   };
 
-  // Create a map of valid holder balances for quick lookup
   const holderBalances = new Map();
   holders.forEach(holder => {
     if (holder?.Holder?.Address && holder?.Balance?.Amount) {
@@ -92,7 +94,6 @@ const calculateStatistics = (holders = [], transactions = []) => {
 
   stats.totalHoldings = Array.from(holderBalances.values()).reduce((sum, balance) => sum + balance, 0);
 
-  // Track individual holder trading volumes
   const holderBuyVolumes = new Map();
   const holderSellVolumes = new Map();
 
@@ -116,7 +117,24 @@ const calculateStatistics = (holders = [], transactions = []) => {
     }
   });
 
-  // Calculate average percentages
+  stats.totalVolume24h = stats.totalBuyVolume24h + stats.totalSellVolume24h;
+  stats.volume = stats.totalVolume24h;
+
+  if (stats.totalVolume24h > 0) {
+    stats.volumeBreakdown.buys = ((stats.totalBuyVolume24h / stats.totalVolume24h) * 100).toFixed(1);
+    stats.volumeBreakdown.sells = ((stats.totalSellVolume24h / stats.totalVolume24h) * 100).toFixed(1);
+    
+    const recentBuyPressure = stats.totalBuyVolume24h / stats.totalVolume24h;
+    const tradingSignal = determineTradingSignal(recentBuyPressure, stats.tradingActivity);
+    
+    stats.tradingSignal = tradingSignal;
+    stats.tradingMomentum = {
+      buyPressure: (recentBuyPressure * 100).toFixed(1),
+      signal: tradingSignal.signal,
+      description: tradingSignal.description
+    };
+  }
+
   let totalBuyerPercentage = 0;
   let totalSellerPercentage = 0;
 
@@ -144,106 +162,110 @@ const calculateStatistics = (holders = [], transactions = []) => {
       ? (totalSellerPercentage / stats.uniqueSellers.size).toFixed(1)
       : '0';
 
-  stats.totalVolume24h = stats.totalBuyVolume24h + stats.totalSellVolume24h;
-  
-  if (stats.totalVolume24h > 0) {
-    stats.volumeBreakdown.buys = ((stats.totalBuyVolume24h / stats.totalVolume24h) * 100).toFixed(1);
-    stats.volumeBreakdown.sells = ((stats.totalSellVolume24h / stats.totalVolume24h) * 100).toFixed(1);
-  }
-
   if (stats.totalHoldings > 0) {
     stats.tradingActivity.percentOfHoldingsBought = 
       ((stats.totalBuyVolume24h / stats.totalHoldings) * 100).toFixed(1);
     stats.tradingActivity.percentOfHoldingsSold = 
-      ((stats.totalSellVolume24h / stats.totalHoldings) * 100).toFixed(1);  
+      ((stats.totalSellVolume24h / stats.totalHoldings) * 100).toFixed(1);
   }
-
-  // Calculate trading momentum with proper percentages
-  const totalVolume = stats.totalBuyVolume24h + stats.totalSellVolume24h;
-  if (totalVolume > 0) {
-    const recentBuyPressure = stats.totalBuyVolume24h / totalVolume;
-    const tradingSignal = determineTradingSignal(recentBuyPressure, {
-      percentOfHoldingsBought: stats.tradingActivity.percentOfHoldingsBought,
-      percentOfHoldingsSold: stats.tradingActivity.percentOfHoldingsSold
-    });
-    
-    stats.tradingMomentum = {
-      buyPressure: (recentBuyPressure * 100).toFixed(1),
-      signal: tradingSignal.signal,
-      description: tradingSignal.description
-    };
-  }
-
-  // Calculate risk metrics with proper percentages
-  if (stats.totalHoldings > 0) {
-    const validBalances = Array.from(holderBalances.values())
-      .sort((a, b) => b - a);
-    
-    const top5Holdings = validBalances
-      .slice(0, 5)
-      .reduce((sum, balance) => sum + balance, 0);
-    
-    stats.riskMetrics = {
-      holderConcentration: top5Holdings / stats.totalHoldings,
-      tradingIntensity: stats.totalVolume24h / stats.totalHoldings
-    };
-
-    console.log('Debug metrics:', {
-      top5Holdings,
-      totalHoldings: stats.totalHoldings,
-      concentration: (top5Holdings / stats.totalHoldings * 100).toFixed(1),
-      tradingIntensity: (stats.totalVolume24h / stats.totalHoldings * 100).toFixed(1)
-    });
-  }
-
-  // Calculate volume breakdown
-  if (stats.totalVolume24h > 0) {
-    stats.volumeBreakdown = {
-      buys: ((stats.totalBuyVolume24h / stats.totalVolume24h) * 100).toFixed(1),
-      sells: ((stats.totalSellVolume24h / stats.totalVolume24h) * 100).toFixed(1)
-    };
-  }
-
-  // Calculate trading activity percentages
-  if (stats.totalHoldings > 0) {
-    stats.tradingActivity = {
-      percentOfHoldingsBought: ((stats.totalBuyVolume24h / stats.totalHoldings) * 100).toFixed(1),
-      percentOfHoldingsSold: ((stats.totalSellVolume24h / stats.totalHoldings) * 100).toFixed(1),
-      averageBuyerPercentage: stats.tradingActivity.averageBuyerPercentage,
-      averageSellerPercentage: stats.tradingActivity.averageSellerPercentage
-    };
-  }
-
-  // Add some debug logging
-  console.log('Final stats:', {
-    totalHoldings: stats.totalHoldings,
-    totalVolume: stats.totalVolume24h,
-    buyVolume: stats.totalBuyVolume24h,
-    sellVolume: stats.totalSellVolume24h,
-    tradingMomentum: stats.tradingMomentum,
-    riskMetrics: stats.riskMetrics
-  });
 
   return stats;
+};
+
+const copyToClipboard = async (text) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    console.log('Address copied to clipboard');
+  } catch (err) {
+    console.error('Failed to copy address:', err);
+  }
+};
+
+const isDEXAddress = (address) => {
+  address = address.toLowerCase();
+  return knownDEXAddresses.includes(address) || isPoolAddress(address);
+};
+
+const isPoolAddress = (address) => {
+  const poolAddresses = [
+    '0x8d58e202016122aae65be55694dbce1b810b4072',   // Uniswap V2 pool
+    '0xba12222222228d8ba445958a75a0704d566bf2c8',   // Balancer pool
+    // Add more pool addresses as needed
+  ].map(addr => addr.toLowerCase());
+  
+  return poolAddresses.includes(address.toLowerCase());
+};
+
+export const analyzeTransaction = (tx, holderActivity) => {
+  const amount = Number(tx.Transfer.Amount);
+  
+  // Skip very small trades
+  if (amount < SMALL_TRADE_THRESHOLD) {
+    console.log('Skipping small trade:', amount);
+    return;
+  }
+
+  // Flag high value transactions
+  if (amount > HIGH_VALUE_THRESHOLD) {
+    console.log('High value transaction detected:', amount);
+  }
+
+  // Rest of your transaction analysis logic
 };
 
 function App() {
   const [contract, setContract] = useState('');
   const [holders, setHolders] = useState([]);
   const [transactions, setTransactions] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false);  
   const [error, setError] = useState(null);
   const [holderActivity, setHolderActivity] = useState({});
   const [currentPage, setCurrentPage] = useState(1);
   const [stats, setStats] = useState(null);
-  const holdersPerPage = 25;
+  const transactionsPerPage = 100;
   const [timeRange, setTimeRange] = useState(24); // Default to 24h
+  const [showDexOnly, setShowDexOnly] = useState(true);
 
-  // Calculate pagination
-  const indexOfLastHolder = currentPage * holdersPerPage;
-  const indexOfFirstHolder = indexOfLastHolder - holdersPerPage;
-  const currentHolders = holders.slice(indexOfFirstHolder, indexOfLastHolder);
-  const totalPages = Math.ceil(holders.length / holdersPerPage);
+  const filterTransactions = (txs) => {
+    if (!txs) return [];
+    
+    console.log('Total transactions before filtering:', txs.length);
+    
+    const filtered = txs.filter(tx => {
+      const sender = tx.Transfer.Sender.toLowerCase();
+      const receiver = tx.Transfer.Receiver.toLowerCase();
+      const senderIsDEX = isDEXAddress(sender);
+      const receiverIsDEX = isDEXAddress(receiver);
+      
+      // Log DEX detection
+      if (senderIsDEX || receiverIsDEX) {
+        console.log('DEX transaction found:', {
+          sender,
+          receiver,
+          senderIsDEX,
+          receiverIsDEX,
+          amount: tx.Transfer.Amount
+        });
+      }
+      
+      // If we're in DEX-only mode, keep only transactions where exactly one party is a DEX
+      if (showDexOnly) {
+        return (senderIsDEX && !receiverIsDEX) || (!senderIsDEX && receiverIsDEX);
+      }
+      
+      return true;
+    });
+    
+    console.log('Transactions after filtering:', filtered.length);
+    return filtered;
+  };
+
+  const filteredTransactions = filterTransactions(transactions);
+  const totalPagesTransactions = Math.ceil(filteredTransactions.length / transactionsPerPage);
+  const currentTransactions = filteredTransactions.slice(
+    (currentPage - 1) * transactionsPerPage,
+    currentPage * transactionsPerPage
+  );
 
   const fetchData = async () => {
     if (!contract) return;
@@ -254,12 +276,10 @@ function App() {
     try {
       const holdersData = await fetchTopHolders(contract);
       
-      // Early validation of holders data
       if (!holdersData || !Array.isArray(holdersData)) {
         throw new Error('Invalid holders data received');
       }
       
-      // Filter out invalid holder entries before processing
       const validHolders = holdersData.filter(holder => {
         try {
           return holder && 
@@ -277,17 +297,17 @@ function App() {
         throw new Error('No valid holder data found');
       }
 
-      // Only fetch transactions for valid holders
       const validAddresses = validHolders.map(h => h.Holder.Address);
       const transactionsData = await fetchTransactions(validAddresses, contract, timeRange);
       
       setHolders(validHolders);
       setTransactions(transactionsData);
       
-      const statsData = calculateStatistics(validHolders, transactionsData);
+      const filteredTxs = filterTransactions(transactionsData);
+      const statsData = calculateStatistics(validHolders, filteredTxs);
       if (statsData) {
         setStats(statsData);
-        const activity = processTransactions(transactionsData, validHolders);
+        const activity = processTransactions(filteredTxs, validHolders);
         setHolderActivity(activity);
       }
       
@@ -299,31 +319,9 @@ function App() {
     }
   };
 
-  // Add pagination controls
-  const Pagination = () => (
-    <div style={{ margin: '20px 0', textAlign: 'center' }}>
-      <button 
-        onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-        disabled={currentPage === 1}
-        style={{ margin: '0 10px' }}
-      >
-        Previous
-      </button>
-      <span>Page {currentPage} of {totalPages}</span>
-      <button 
-        onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-        disabled={currentPage === totalPages}
-        style={{ margin: '0 10px' }}
-      >
-        Next
-      </button>
-    </div>
-  );
-
   const processTransactions = (transactions, holders) => {
     const activity = {};
     
-    // Initialize holder activity with safer null checks
     holders?.forEach(holder => {
       if (holder?.Holder?.Address) {
         const address = holder.Holder.Address.toLowerCase();
@@ -338,7 +336,6 @@ function App() {
       }
     });
 
-    // Process each transaction with null checks
     transactions?.forEach(tx => {
       if (!tx?.Transfer?.Amount || !tx?.Block?.Time) return;
       
@@ -364,7 +361,6 @@ function App() {
     return activity;
   };
 
-  // Add the time range selector component
   const TimeRangeSelector = () => (
     <div style={{ 
       display: 'flex', 
@@ -394,271 +390,245 @@ function App() {
     </div>
   );
 
-  return (
-    <div className="App" style={{ 
-      backgroundColor: '#1a1b1e',
-      minHeight: '100vh',
-      color: '#e0e0e0',
-      padding: '20px 0'
-    }}>
-      <div style={{ maxWidth: '1000px', margin: '20px auto', padding: '0 20px' }}>
-        <h1 style={{ 
-          textAlign: 'center', 
-          color: '#00ffbb',
-          marginBottom: '30px',
-          fontSize: '2.5em',
-          textShadow: '0 0 10px rgba(0,255,187,0.3)',
-          fontFamily: "'Segoe UI', Roboto, 'Helvetica Neue', sans-serif"
-        }}>
-          TOP TRADERS ACTIVITY MONITOR
-        </h1>
-        <h3 style={{ 
-          textAlign: 'center', 
-          color: '#8b8b8d',
-          marginBottom: '30px',
-          fontWeight: 'normal',
-          fontSize: '1.2em',
-          letterSpacing: '0.5px'
-        }}>
-          Real-time analysis of whale trading patterns and market direction
-        </h3>
-        
-        {/* Add TimeRangeSelector before the input */}
-        <TimeRangeSelector />
+  const NavBar = () => {
+    const location = useLocation();
+    
+    return (
+      <nav className="app-nav">
+        <ul>
+          <li>
+            <Link 
+              to="/" 
+              className={location.pathname === '/' ? 'active' : ''}
+            >
+              Top Holder Analysis
+            </Link>
+          </li>
+          <li>
+            <Link 
+              to="/giga-degens" 
+              className={location.pathname === '/giga-degens' ? 'active' : ''}
+            >
+              Giga Degens 🔍
+            </Link>
+          </li>
+        </ul>
+      </nav>
+    );
+  };
 
-        <div style={{ 
-          marginBottom: '30px',
-          textAlign: 'center'
-        }}>
-          <input
-            type="text"
-            value={contract}
-            onChange={(e) => setContract(e.target.value)}
-            placeholder="Enter token contract address"
-            style={{ 
-              width: '400px', 
-              marginRight: '10px', 
-              padding: '12px',
-              backgroundColor: '#2a2b2e',
-              border: '1px solid #3a3b3e',
-              borderRadius: '6px',
-              color: '#e0e0e0',
-              fontSize: '1em'
-            }}
-          />
-          <button 
-            onClick={fetchData}
-            style={{
-              padding: '12px 24px',
-              backgroundColor: '#00ffbb',
-              color: '#1a1b1e',
-              border: 'none',
-              borderRadius: '6px',
-              fontSize: '1em',
-              cursor: 'pointer',
-              fontWeight: 'bold',
-              transition: 'all 0.3s ease',
-              boxShadow: '0 0 10px rgba(0,255,187,0.3)'
-            }}
-            onMouseOver={(e) => e.target.style.transform = 'translateY(-2px)'}
-            onMouseOut={(e) => e.target.style.transform = 'translateY(0)'}
-          >
-            Analyze Token
-          </button>
-        </div>
+  const renderPagination = () => {
+    if (transactions.length <= transactionsPerPage) return null;
 
-        {error && (
-          <div style={{ 
-            color: '#ff4444', 
-            marginBottom: '20px',
-            padding: '15px',
-            backgroundColor: 'rgba(255,68,68,0.1)',
-            borderRadius: '6px',
-            textAlign: 'center'
-          }}>
-            Error: {error}
-          </div>
-        )}
-
-        {/* Market Statistics Panel */}
-        {stats && (
-          <div style={{ 
-            backgroundColor: '#2a2b2e', 
-            padding: '25px', 
-            marginBottom: '30px', 
-            borderRadius: '12px',
-            fontSize: '1.1em',
-            lineHeight: '1.6',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
-          }}>
-            <div>
-              <strong>24h Trading Summary:</strong> Top holders traded{' '} 
-              <strong>{stats.totalVolume24h.toLocaleString()} {stats.tokenSymbol}</strong>{' '}
-              tokens in the last 24 hours ({' '}
-              <span style={{ color: '#44bb44' }}>
-                {stats.volumeBreakdown.buys}% buys
-              </span>
-              {' / '}
-              <span style={{ color: '#ff4444' }}>
-                {stats.volumeBreakdown.sells}% sells
-              </span>
-              ). This represents{' '}
-              <strong>
-                {((stats.totalVolume24h / stats.totalHoldings) * 100).toFixed(1)}%
-              </strong>
-              {' '}of total holdings.
-            </div>
-            <div style={{ marginTop: '10px' }}>
-              Trading Activity:{' '}
-              <span style={{ color: '#44bb44' }}>
-                Bought {stats.tradingActivity.percentOfHoldingsBought}%
-              </span>
-              {' / '}
-              <span style={{ color: '#ff4444' }}>
-                Sold {stats.tradingActivity.percentOfHoldingsSold}%
-              </span>
-              {' '}of top holders' total holdings
-            </div>
-            <div style={{ marginTop: '10px' }}>
-              Individual Trading Activity:{' '}
-              <span style={{ color: '#44bb44' }}>
-                Average buyer bought {stats.tradingActivity.averageBuyerPercentage}%
-              </span>
-              {' / '}
-              <span style={{ color: '#ff4444' }}>
-                Average seller sold {stats.tradingActivity.averageSellerPercentage}%
-              </span>
-              {' '}of their holdings
-            </div>
-            {stats.tradingMomentum && (
-              <div style={{ 
-                marginTop: '15px', 
-                padding: '10px', 
-                backgroundColor: '#2a2b2e',
-                borderRadius: '5px' 
-              }}>
-                <strong>Market Direction:</strong>{' '}
-                <span style={{ 
-                  color: stats.tradingMomentum.signal === 'BUYING_PRESSURE' ? '#44bb44' : 
-                         stats.tradingMomentum.signal === 'SELLING_PRESSURE' ? '#ff4444' : '#8b8b8d'
-                }}>
-                  {stats.tradingMomentum.description}
-                </span>
-              </div>
-            )}
-            
-            {stats.riskMetrics && (
-              <div style={{ 
-                marginTop: '15px', 
-                padding: '10px', 
-                backgroundColor: '#2a2b2e',
-                borderRadius: '5px' 
-              }}>
-                <strong>Risk Analysis:</strong>
-                <div style={{ marginTop: '8px' }}>
-                  <div>
-                    <span style={{ 
-                      color: stats.riskMetrics.holderConcentration > 0.5 ? '#ff4444' : 
-                             stats.riskMetrics.holderConcentration > 0.3 ? '#ff8800' : '#44bb44'
-                    }}>
-                      • Top 5 wallets control {(stats.riskMetrics.holderConcentration * 100).toFixed(1)}% of all tokens
-                      {stats.riskMetrics.holderConcentration > 0.5 ? ' (High concentration)' :
-                       stats.riskMetrics.holderConcentration > 0.3 ? ' (Moderate concentration)' : ' (Well distributed)'}
-                    </span>
-                  </div>
-                  <div style={{ marginTop: '5px' }}>
-                    <span style={{
-                      color: stats.riskMetrics.tradingIntensity > 0.1 ? '#ff4444' :
-                             stats.riskMetrics.tradingIntensity > 0.05 ? '#ff8800' : '#44bb44'
-                    }}>
-                      • Daily trading volume is {(stats.riskMetrics.tradingIntensity * 100).toFixed(1)}% of total supply
-                      {stats.riskMetrics.tradingIntensity > 0.1 ? ' (High volatility)' :
-                       stats.riskMetrics.tradingIntensity > 0.05 ? ' (Moderate activity)' : ' (Stable trading)'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Recent Transactions Table */}
-        {transactions.length > 0 && (
-          <div style={{
-            backgroundColor: '#2a2b2e',
-            padding: '25px',
-            borderRadius: '12px',
-            marginTop: '30px',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
-          }}>
-            <h3 style={{ color: '#00ffbb', marginBottom: '20px' }}>Recent Holder Transactions (24h)</h3>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ backgroundColor: '#3a3b3e' }}>
-                  <th style={{ padding: '10px', border: '1px solid #3a3b3e' }}>Time</th>
-                  <th style={{ padding: '10px', border: '1px solid #3a3b3e' }}>Type</th>
-                  <th style={{ padding: '10px', border: '1px solid #3a3b3e' }}>Address</th>
-                  <th style={{ padding: '10px', border: '1px solid #3a3b3e' }}>Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map((tx, idx) => {
-                  const isSell = holders.some(holder => 
-                    holder?.Holder?.Address?.toLowerCase() === tx?.Transfer?.Sender?.toLowerCase()
-                  );
-                  return (
-                    <tr key={idx} style={{ borderBottom: '1px solid #ddd' }}>
-                      <td style={{ padding: '10px', border: '1px solid #ddd' }}>
-                        {new Date(tx.Block.Time).toLocaleString()}
-                      </td>
-                      <td style={{ 
-                        padding: '10px', 
-                        border: '1px solid #ddd',
-                        color: isSell ? '#ff4444' : '#44bb44'
-                      }}>
-                        {isSell ? 'SELL' : 'BUY'}
-                      </td>
-                      <td style={{ padding: '10px', border: '1px solid #ddd' }}>
-                        {(isSell ? tx.Transfer.Sender : tx.Transfer.Receiver).slice(0, 6)}...
-                        {(isSell ? tx.Transfer.Sender : tx.Transfer.Receiver).slice(-4)}
-                      </td>
-                      <td style={{ 
-                        padding: '10px', 
-                        border: '1px solid #ddd',
-                        color: isSell ? '#ff4444' : '#44bb44'
-                      }}>
-                        {Number(tx.Transfer.Amount).toLocaleString()} {tx.Transfer.Currency.Symbol}
-                        <span style={{ marginLeft: '8px', fontSize: '0.9em' }}>(Transfer)</span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* Significant trades section with null check */}
-        {stats?.significantTrades?.length > 0 && (
-          <div style={{ 
-            backgroundColor: '#fff3cd', 
-            padding: '15px', 
-            marginTop: '10px', 
-            borderRadius: '8px' 
-          }}>
-            <strong>Significant Trades Alert:</strong>
-            {stats.significantTrades.map((trade, i) => (
-              <div key={i} style={{ 
-                color: trade.type === 'BUY' ? '#44bb44' : '#ff4444',
-                marginTop: '5px' 
-              }}>
-                {trade.type}: {trade.percentage}% of total
-              </div>
-            ))}
-          </div>
-        )}
+    return (
+      <div className="pagination">
+        <button
+          onClick={() => setCurrentPage(prev => prev - 1)}
+          disabled={currentPage === 1}
+        >
+          Previous
+        </button>
+        <span>Page {currentPage} of {totalPagesTransactions}</span>
+        <button
+          onClick={() => setCurrentPage(prev => prev + 1)}
+          disabled={currentPage === totalPagesTransactions}
+        >
+          Next
+        </button>
       </div>
-    </div>
+    );
+  };
+
+  const DisplayModeToggle = () => (
+    <button
+      onClick={() => setShowDexOnly(!showDexOnly)}
+      style={{
+        padding: '8px 16px',
+        backgroundColor: showDexOnly ? '#00ffbb' : '#2a2b2e',
+        color: showDexOnly ? '#1a1b1e' : '#e0e0e0',
+        border: 'none',
+        borderRadius: '6px',
+        cursor: 'pointer',
+        transition: 'all 0.3s ease',
+        fontSize: '0.9em',
+        fontWeight: 'bold',
+        marginBottom: '20px'
+      }}
+    >
+      {showDexOnly ? '🔍 DEX-Only Mode Active' : '🔍 Showing All Transactions'}
+    </button>
+  );
+
+  return (
+    <Router>
+      <div className="App">
+        <NavBar />
+        <Switch>
+          <Route exact path="/">
+            <div className="container">
+              <h1>Token Holder Analysis</h1>
+              
+              <div className="search-container">
+                <input
+                  type="text"
+                  value={contract}
+                  onChange={(e) => setContract(e.target.value)}
+                  placeholder="Enter token contract address"
+                />
+                <button onClick={fetchData}>Analyze</button>
+              </div>
+
+              <TimeRangeSelector />
+              <DisplayModeToggle />
+
+              {error && (
+                <div className="error-message">
+                  Error: {error}
+                </div>
+              )}
+
+              {/* Market Statistics Panel */}
+              {stats && (
+                <div className="stats-panel">
+                  <div>
+                    <strong>{timeRange}h Trading Summary {showDexOnly ? '(DEX Trades Only)' : '(All Trades)'}:</strong> Top holders traded{' '} 
+                    <strong>{stats.totalVolume24h.toLocaleString()} {stats.tokenSymbol}</strong>{' '}
+                    tokens in the last {timeRange} hours ({' '}
+                    <span className="buy-color">{stats.volumeBreakdown.buys}% buys</span>
+                    {' / '}
+                    <span className="sell-color">{stats.volumeBreakdown.sells}% sells</span>
+                    ). This represents{' '}
+                    <strong>
+                      {((stats.totalVolume24h / stats.totalHoldings) * 100).toFixed(1)}%
+                    </strong>
+                    {' '}of total holdings.
+                  </div>
+
+                  <div className="trading-activity">
+                    Trading Activity{showDexOnly ? ' (DEX Only)' : ''}: {' '}
+                    <span className="buy-color">
+                      Bought {stats.tradingActivity.percentOfHoldingsBought}%
+                    </span>
+                    {' / '}
+                    <span className="sell-color">
+                      Sold {stats.tradingActivity.percentOfHoldingsSold}%
+                    </span>
+                    {' '}of top holders' total holdings
+                  </div>
+
+                  <div className="individual-activity">
+                    Individual Trading Activity{showDexOnly ? ' (DEX Only)' : ''}: {' '}
+                    <span className="buy-color">
+                      Average buyer bought {stats.tradingActivity.averageBuyerPercentage}%
+                    </span>
+                    {' / '}
+                    <span className="sell-color">
+                      Average seller sold {stats.tradingActivity.averageSellerPercentage}%
+                    </span>
+                    {' '}of their holdings
+                  </div>
+
+                  {/* Market Direction */}
+                  {stats.tradingMomentum && (
+                    <div className="market-direction">
+                      <strong>Market Direction{showDexOnly ? ' (DEX Only)' : ''}:</strong>{' '}
+                      <span className={`signal-${stats.tradingMomentum.signal.toLowerCase()}`}>
+                        {stats.tradingSignal.description}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Recent Transactions Table */}
+              {filteredTransactions.length > 0 && (
+                <div className="transactions-table">
+                  <h3>Recent Transactions {showDexOnly ? '(DEX Trades Only)' : '(All Trades)'}</h3>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Type</th>
+                        <th>Amount</th>
+                        <th>From</th>
+                        <th>To</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {currentTransactions.map((tx, index) => {
+                        const senderIsDEX = isDEXAddress(tx.Transfer.Sender.toLowerCase());
+                        const receiverIsDEX = isDEXAddress(tx.Transfer.Receiver.toLowerCase());
+                        
+                        let txType;
+                        if (senderIsDEX && !receiverIsDEX) {
+                          // DEX -> Individual = BUY
+                          txType = 'BUY';
+                        } else if (!senderIsDEX && receiverIsDEX) {
+                          // Individual -> DEX = SELL
+                          txType = 'SELL';
+                        } else {
+                          // Individual -> Individual = TRANSFER
+                          txType = 'TRANSFER';
+                        }
+                        
+                        // Skip rendering if it's a DEX-to-DEX transaction
+                        if (senderIsDEX && receiverIsDEX) {
+                          return null;
+                        }
+                        
+                        return (
+                          <tr key={index}>
+                            <td>{new Date(tx.Block.Time).toLocaleString()}</td>
+                            <td style={{ 
+                              color: txType === 'BUY' ? '#44bb44' : 
+                                    txType === 'SELL' ? '#ff4444' :
+                                    txType === 'TRANSFER' ? '#bbbb44' : '#888888'
+                            }}>
+                              {txType}
+                            </td>
+                            <td>{Number(tx.Transfer.Amount).toLocaleString()}</td>
+                            <td>
+                              <span 
+                                title="Click to copy" 
+                                onClick={() => copyToClipboard(tx.Transfer.Sender)}
+                                style={{ 
+                                  color: senderIsDEX ? '#00ffbb' : 'inherit',
+                                  fontStyle: senderIsDEX ? 'italic' : 'normal'
+                                }}
+                              >
+                                {formatAddress(tx.Transfer.Sender)}
+                              </span>
+                            </td>
+                            <td>
+                              <span 
+                                title="Click to copy" 
+                                onClick={() => copyToClipboard(tx.Transfer.Receiver)}
+                                style={{ 
+                                  color: receiverIsDEX ? '#00ffbb' : 'inherit',
+                                  fontStyle: receiverIsDEX ? 'italic' : 'normal'
+                                }}
+                              >
+                                {formatAddress(tx.Transfer.Receiver)}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {renderPagination()}
+            </div>
+          </Route>
+
+          <Route path="/giga-degens">
+            <GigaDegens contract={contract} />
+          </Route>
+        </Switch>
+      </div>
+    </Router>
   );
 }
 
