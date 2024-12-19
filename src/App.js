@@ -169,6 +169,46 @@ const calculateStatistics = (holders = [], transactions = []) => {
       ((stats.totalSellVolume24h / stats.totalHoldings) * 100).toFixed(1);
   }
 
+  // Add volume-weighted analysis
+  let volumeWeightedBuyPrice = 0;
+  let volumeWeightedSellPrice = 0;
+  let totalBuyVolume = 0;
+  let totalSellVolume = 0;
+  
+  transactions.forEach(tx => {
+    if (!tx?.Transfer?.Amount || !tx?.Block?.Time) return;
+    const amount = Number(tx.Transfer.Amount);
+    const sender = tx.Transfer.Sender.toLowerCase();
+    const receiver = tx.Transfer.Receiver.toLowerCase();
+    const senderIsDEX = isDEXAddress(sender) && !isPoolAddress(sender);
+    const receiverIsDEX = isDEXAddress(receiver) && !isPoolAddress(receiver);
+    
+    if (senderIsDEX && !receiverIsDEX) {
+      // It's a buy
+      totalBuyVolume += amount;
+    } else if (!senderIsDEX && receiverIsDEX) {
+      // It's a sell
+      totalSellVolume += amount;
+    }
+  });
+
+  // Add to stats object
+  stats.volumeAnalysis = {
+    totalBuyVolume,
+    totalSellVolume,
+    buyToSellRatio: totalSellVolume > 0 ? (totalBuyVolume / totalSellVolume).toFixed(2) : 'N/A',
+    averageBuySize: (totalBuyVolume / stats.uniqueBuyers.size).toFixed(2),
+    averageSellSize: (totalSellVolume / stats.uniqueSellers.size).toFixed(2)
+  };
+
+  // Update market direction description to include volume analysis
+  if (stats.tradingMomentum) {
+    const avgBuySize = parseFloat(stats.volumeAnalysis.averageBuySize);
+    const avgSellSize = parseFloat(stats.volumeAnalysis.averageSellSize);
+    
+    stats.tradingMomentum.description += ` (Avg buy: ${avgBuySize.toLocaleString()} / Avg sell: ${avgSellSize.toLocaleString()})`;
+  }
+
   return stats;
 };
 
@@ -190,6 +230,8 @@ const isPoolAddress = (address) => {
   const poolAddresses = [
     '0x8d58e202016122aae65be55694dbce1b810b4072',   // Uniswap V2 pool
     '0xba12222222228d8ba445958a75a0704d566bf2c8',   // Balancer pool
+    '0x1caa19d70820cb61e78319759fac46c8c52f8809',
+    '0xfa4a4c553733f2e0c54f1c4b0ddc1fa2f5f10ce6',
     // Add more pool addresses as needed
   ].map(addr => addr.toLowerCase());
   
@@ -213,6 +255,34 @@ export const analyzeTransaction = (tx, holderActivity) => {
   // Rest of your transaction analysis logic
 };
 
+const formatRank = (rank) => {
+  if (!rank) return '';
+  const lastDigit = rank % 10;
+  const lastTwoDigits = rank % 100;
+  
+  // Special case for 11, 12, 13
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 13) {
+    return `#${rank}th`;
+  }
+  
+  // For other numbers
+  const suffix = ['th', 'st', 'nd', 'rd'][lastDigit] || 'th';
+  return `#${rank}${suffix}`;
+};
+
+const renderAddress = (address, rank, isDEX) => (
+  <div className="address-with-rank">
+    <span 
+      title="Click to copy" 
+      onClick={() => copyToClipboard(address)}
+      className={isDEX ? 'dex-address' : 'normal-address'}
+    >
+      {formatAddress(address)}
+    </span>
+    {!isDEX && rank && <span className="holder-rank">{formatRank(rank)}</span>}
+  </div>
+);
+
 function App() {
   const [contract, setContract] = useState('');
   const [holders, setHolders] = useState([]);
@@ -222,9 +292,12 @@ function App() {
   const [holderActivity, setHolderActivity] = useState({});
   const [currentPage, setCurrentPage] = useState(1);
   const [stats, setStats] = useState(null);
+  const [holderLimit, setHolderLimit] = useState(200);
   const transactionsPerPage = 100;
-  const [timeRange, setTimeRange] = useState(24); // Default to 24h
+  const [timeRange, setTimeRange] = useState(24);
   const [showDexOnly, setShowDexOnly] = useState(true);
+  const [showRawTransactions, setShowRawTransactions] = useState(false);
+  const [rawTransactions, setRawTransactions] = useState([]);
 
   const filterTransactions = (txs) => {
     if (!txs) return [];
@@ -234,29 +307,38 @@ function App() {
     const filtered = txs.filter(tx => {
       const sender = tx.Transfer.Sender.toLowerCase();
       const receiver = tx.Transfer.Receiver.toLowerCase();
-      const senderIsDEX = isDEXAddress(sender);
-      const receiverIsDEX = isDEXAddress(receiver);
+      const amount = Number(tx.Transfer.Amount);
       
-      // Log DEX detection
-      if (senderIsDEX || receiverIsDEX) {
-        console.log('DEX transaction found:', {
-          sender,
-          receiver,
-          senderIsDEX,
-          receiverIsDEX,
-          amount: tx.Transfer.Amount
-        });
-      }
+      // Debug log each transaction
+      console.log('Checking transaction:', {
+        time: new Date(tx.Block.Time).toLocaleString(),
+        amount: amount,
+        sender: sender,
+        receiver: receiver,
+        senderIsDEX: isDEXAddress(sender),
+        receiverIsDEX: isDEXAddress(receiver)
+      });
       
-      // If we're in DEX-only mode, keep only transactions where exactly one party is a DEX
       if (showDexOnly) {
-        return (senderIsDEX && !receiverIsDEX) || (!senderIsDEX && receiverIsDEX);
+        // Include trades where either:
+        // 1. The receiver is a DEX (SELL)
+        // 2. The sender is a DEX (BUY)
+        const isDexTrade = isDEXAddress(receiver) || isDEXAddress(sender);
+        
+        if (!isDexTrade) {
+          console.log('Filtered out:', {
+            reason: 'Not a DEX trade',
+            amount: amount,
+            time: new Date(tx.Block.Time).toLocaleString()
+          });
+        }
+        return isDexTrade;
+      } else {
+        return true;
       }
-      
-      return true;
     });
     
-    console.log('Transactions after filtering:', filtered.length);
+    console.log('Filtered transactions:', filtered.length);
     return filtered;
   };
 
@@ -274,40 +356,51 @@ function App() {
     setError(null);
     
     try {
-      const holdersData = await fetchTopHolders(contract);
+      const data = await fetchTopHolders(contract, holderLimit);
       
-      if (!holdersData || !Array.isArray(holdersData)) {
+      if (!data || !Array.isArray(data)) {
         throw new Error('Invalid holders data received');
       }
       
-      const validHolders = holdersData.filter(holder => {
-        try {
-          return holder && 
-                 holder.Holder && 
-                 typeof holder.Holder === 'object' &&
-                 holder.Holder.Address && 
-                 holder.Balance && 
-                 holder.Balance.Amount;
-        } catch (e) {
-          return false;
-        }
+      const validHolders = data.filter(holder => {
+        return holder && 
+               holder.Holder && 
+               typeof holder.Holder === 'object' &&
+               holder.Holder.Address && 
+               holder.Balance && 
+               holder.Balance.Amount;
       });
 
       if (validHolders.length === 0) {
         throw new Error('No valid holder data found');
       }
 
+      // Create rankings map here
+      const holderRankings = new Map();
+      validHolders.forEach((holder, index) => {
+        if (holder?.Holder?.Address) {
+          holderRankings.set(holder.Holder.Address.toLowerCase(), index + 1);
+        }
+      });
+
       const validAddresses = validHolders.map(h => h.Holder.Address);
-      const transactionsData = await fetchTransactions(validAddresses, contract, timeRange);
+      const transactionsData = await fetchTransactions(
+        validAddresses, 
+        contract, 
+        holderRankings,  // Pass the rankings map
+        timeRange
+      );
+      
+      // Store both raw and filtered transactions
+      setRawTransactions(transactionsData.raw);
+      setTransactions(transactionsData.filtered);
       
       setHolders(validHolders);
-      setTransactions(transactionsData);
       
-      const filteredTxs = filterTransactions(transactionsData);
-      const statsData = calculateStatistics(validHolders, filteredTxs);
+      const statsData = calculateStatistics(validHolders, transactionsData.filtered);
       if (statsData) {
         setStats(statsData);
-        const activity = processTransactions(filteredTxs, validHolders);
+        const activity = processTransactions(transactionsData.filtered, validHolders);
         setHolderActivity(activity);
       }
       
@@ -390,6 +483,39 @@ function App() {
     </div>
   );
 
+  const HolderLimitSelector = () => {
+    const limits = [100, 200, 500, 1000];
+    
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center',
+        gap: '10px',
+        marginBottom: '20px'
+      }}>
+        {limits.map((limit) => (
+          <button
+            key={limit}
+            onClick={() => setHolderLimit(limit)}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: holderLimit === limit ? '#00ffbb' : '#2a2b2e',
+              color: holderLimit === limit ? '#1a1b1e' : '#e0e0e0',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              transition: 'all 0.3s ease',
+              fontSize: '0.9em',
+              fontWeight: holderLimit === limit ? 'bold' : 'normal'
+            }}
+          >
+            {limit} Holders
+          </button>
+        ))}
+      </div>
+    );
+  };
+
   const NavBar = () => {
     const location = useLocation();
     
@@ -459,6 +585,33 @@ function App() {
     </button>
   );
 
+  const RawTransactionToggle = () => (
+    <button
+      onClick={() => setShowRawTransactions(!showRawTransactions)}
+      style={{
+        padding: '8px 16px',
+        backgroundColor: showRawTransactions ? '#ff4444' : '#2a2b2e',
+        color: '#e0e0e0',
+        border: 'none',
+        borderRadius: '6px',
+        cursor: 'pointer',
+        transition: 'all 0.3s ease',
+        fontSize: '0.9em',
+        fontWeight: 'bold',
+        marginBottom: '20px',
+        marginLeft: '10px'
+      }}
+    >
+      {showRawTransactions ? '🔍 Show Filtered' : '🔍 Show Raw Data'}
+    </button>
+  );
+
+  const displayTransactions = showRawTransactions ? rawTransactions : filteredTransactions;
+  const currentDisplayTransactions = displayTransactions.slice(
+    (currentPage - 1) * transactionsPerPage,
+    currentPage * transactionsPerPage
+  );
+
   return (
     <Router>
       <div className="App">
@@ -479,7 +632,11 @@ function App() {
               </div>
 
               <TimeRangeSelector />
-              <DisplayModeToggle />
+              <HolderLimitSelector />
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <DisplayModeToggle />
+                <RawTransactionToggle />
+              </div>
 
               {error && (
                 <div className="error-message">
@@ -541,9 +698,21 @@ function App() {
               )}
 
               {/* Recent Transactions Table */}
-              {filteredTransactions.length > 0 && (
+              {displayTransactions.length > 0 && (
                 <div className="transactions-table">
-                  <h3>Recent Transactions {showDexOnly ? '(DEX Trades Only)' : '(All Trades)'}</h3>
+                  <h3>
+                    Recent Transactions 
+                    {showRawTransactions 
+                      ? ' (Raw Unfiltered Data)' 
+                      : showDexOnly 
+                        ? ' (DEX Trades Only)' 
+                        : ' (All Trades)'}
+                  </h3>
+                  {showRawTransactions && (
+                    <div className="warning-text" style={{color: '#ff4444', marginBottom: '10px'}}>
+                      Showing raw unfiltered data - includes internal transactions
+                    </div>
+                  )}
                   <table>
                     <thead>
                       <tr>
@@ -552,29 +721,29 @@ function App() {
                         <th>Amount</th>
                         <th>From</th>
                         <th>To</th>
+                        <th>Rank</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {currentTransactions.map((tx, index) => {
-                        const senderIsDEX = isDEXAddress(tx.Transfer.Sender.toLowerCase());
-                        const receiverIsDEX = isDEXAddress(tx.Transfer.Receiver.toLowerCase());
+                      {currentDisplayTransactions.map((tx, index) => {
+                        const sender = tx.Transfer.Sender.toLowerCase();
+                        const receiver = tx.Transfer.Receiver.toLowerCase();
+                        const senderIsDEX = isDEXAddress(sender);
+                        const receiverIsDEX = isDEXAddress(receiver);
+                        const senderIsPool = isPoolAddress(sender);
+                        const receiverIsPool = isPoolAddress(receiver);
                         
                         let txType;
-                        if (senderIsDEX && !receiverIsDEX) {
-                          // DEX -> Individual = BUY
+                        if (senderIsDEX || senderIsPool) {
                           txType = 'BUY';
-                        } else if (!senderIsDEX && receiverIsDEX) {
-                          // Individual -> DEX = SELL
+                        } else if (receiverIsDEX || receiverIsPool) {
                           txType = 'SELL';
                         } else {
-                          // Individual -> Individual = TRANSFER
                           txType = 'TRANSFER';
                         }
-                        
-                        // Skip rendering if it's a DEX-to-DEX transaction
-                        if (senderIsDEX && receiverIsDEX) {
-                          return null;
-                        }
+
+                        // Determine which rank to show (the non-DEX trader's rank)
+                        const rankToShow = txType === 'BUY' ? tx.receiverRank : tx.senderRank;
                         
                         return (
                           <tr key={index}>
@@ -591,10 +760,7 @@ function App() {
                               <span 
                                 title="Click to copy" 
                                 onClick={() => copyToClipboard(tx.Transfer.Sender)}
-                                style={{ 
-                                  color: senderIsDEX ? '#00ffbb' : 'inherit',
-                                  fontStyle: senderIsDEX ? 'italic' : 'normal'
-                                }}
+                                className={senderIsDEX ? 'dex-address' : 'normal-address'}
                               >
                                 {formatAddress(tx.Transfer.Sender)}
                               </span>
@@ -603,13 +769,13 @@ function App() {
                               <span 
                                 title="Click to copy" 
                                 onClick={() => copyToClipboard(tx.Transfer.Receiver)}
-                                style={{ 
-                                  color: receiverIsDEX ? '#00ffbb' : 'inherit',
-                                  fontStyle: receiverIsDEX ? 'italic' : 'normal'
-                                }}
+                                className={receiverIsDEX ? 'dex-address' : 'normal-address'}
                               >
                                 {formatAddress(tx.Transfer.Receiver)}
                               </span>
+                            </td>
+                            <td>
+                              {rankToShow && <span className="holder-rank">#{rankToShow}</span>}
                             </td>
                           </tr>
                         );

@@ -151,8 +151,10 @@ button {
 }
 
 .holder-rank {
-  color: #8b8b8d;
-  font-weight: bold;
+  font-size: 0.8em;
+  color: #00ffbb;
+  margin-left: 5px;
+  display: inline-block;
 }
 
 .holder-address {
@@ -295,18 +297,25 @@ button {
 .transactions-table table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.transactions-table th, .transactions-table td {
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .transactions-table th {
   padding: 10px;
   background-color: #3a3b3e;
   border: 1px solid #3a3b3e;
-  text-align: left;
 }
 
 .transactions-table td {
   padding: 10px;
   border: 1px solid #3a3b3e;
+  white-space: nowrap;
 }
 
 .transactions-table tr:hover {
@@ -324,6 +333,30 @@ button {
 
 .transactions-table td span[title]:active {
   opacity: 0.6;
+}
+
+.address-with-rank {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.normal-address, .dex-address {
+  display: inline-block;
+  cursor: pointer;
+}
+
+.dex-address {
+  color: #00ffbb;
+  font-style: italic;
+}
+
+.holder-rank {
+  display: inline-block;
+  font-size: 0.8em;
+  color: #00ffbb;
+  margin-left: 5px;
 }
 
 /* Add these styles for the navigation */
@@ -364,3 +397,17 @@ button {
   color: #00ffbb;
   background-color: #3a3b3e;
 }
+
+.holder-rank {
+  font-size: 0.8em;
+  color: #00ffbb;
+  margin-left: 5px;
+}
+
+/* Column widths */
+.transactions-table th:nth-child(1) { width: 20%; } /* Time */
+.transactions-table th:nth-child(2) { width: 8%; }  /* Type */
+.transactions-table th:nth-child(3) { width: 12%; } /* Amount */
+.transactions-table th:nth-child(4) { width: 20%; } /* From */
+.transactions-table th:nth-child(5) { width: 20%; }  /* From Rank */
+.transactions-table th:nth-child(6) { width: 8%; } /* To */

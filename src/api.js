@@ -51,6 +51,7 @@ const queryBitquery = async (query, variables) => {
 };
 
 console.log('Token available:', !!process.env.REACT_APP_BITQUERY_TOKEN);
+console.log('Loading DEX addresses...');
 
 export const knownDEXAddresses = [
   // Uniswap
@@ -72,9 +73,8 @@ export const knownDEXAddresses = [
   // Other DEXs
   '0x40359b38db010a1d0ff5e7d00cc477d5b393bd72', // BasedAI staking
   '0x9642b23ed1e01df1092b92641051881a322f5d4e', // MEXC
-  '0x7ba92bc019890ecd5a66679d3c452366bc66d7c9', // Generic DEX
-  '0xfa4a4c553733f2e0c54f1c4b0ddc1fa2f5f10ce6', // Generic DEX
-  
+  '0x3cc936b795a188f0e246cbb2d74c5bd190aecf18', //
+'0x9008d19f58aabd9ed0d60971565aa8510560ab41', // cowswap  
   // Balancer
   '0xba12222222228d8ba445958a75a0704d566bf2c8', // Balancer Vault
   
@@ -97,7 +97,6 @@ export const knownDEXAddresses = [
   '0x03f7724180aa6b939894b5ca4314783b0b36b329',  // ShibaSwap Router
   '0x40359b38db010a1d0ff5e7d00cc477d5b393bd72', // basedai staking
   '0x9642b23ed1e01df1092b92641051881a322f5d4e', // mexc 
-  '0x7ba92bc019890ecd5a66679d3c452366bc66d7c9',
   '0xfa4a4c553733f2e0c54f1c4b0ddc1fa2f5f10ce6',
   
   // More Uniswap-related
@@ -170,22 +169,19 @@ export const isLikelyDEX = (transactions, address) => {
   return false;
 };
 
-export const fetchTopHolders = async (contract) => {
+export const fetchTopHolders = async (contract, limit = 200) => {
   if (!BITQUERY_TOKEN) {
     throw new Error('Bitquery token is not configured');
   }
 
   const today = new Date().toISOString().split('T')[0];
-  const oneDayAgo = new Date();
-  oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-
   const query = `
     query {
       EVM(dataset: archive) {
         TokenHolders(
           tokenSmartContract: "${contract}"
           date: "${today}"
-          limit: {count: 200}
+          limit: {count: ${limit}}
           orderBy: {descendingByField: "Balance_Amount"}
           where: {Balance: {Amount: {gt: "0"}}}
         ) {
@@ -219,29 +215,30 @@ export const fetchTopHolders = async (contract) => {
       data: { query }
     });
 
-    console.log('Raw response data structure:', JSON.stringify(response.data, null, 2));
-
-    if (response.data?.errors) {
-      throw new Error(`GraphQL errors: ${JSON.stringify(response.data.errors)}`);
-    }
-
     let holders = response.data?.data?.EVM?.TokenHolders || [];
+    
+    // Create a Map object for holder rankings
+    const holderRankings = new Map();
+    holders.forEach((holder, index) => {
+      if (holder?.Holder?.Address) {
+        holderRankings.set(holder.Holder.Address.toLowerCase(), index + 1);
+      }
+    });
 
-    const txResponse = await fetchTransactions(
-      holders.map(h => h.Holder.Address), 
-      contract
-    );
-    const transactions = txResponse || [];
+    console.log('Holder rankings Map created:', {
+      size: holderRankings.size,
+      sample: Array.from(holderRankings.entries()).slice(0, 3)
+    });
 
+    // Get addresses and pass the Map
+    const holderAddresses = holders.map(h => h.Holder.Address);
+    // Pass 24 as default timeRange if not specified
+    const txResponse = await fetchTransactions(holderAddresses, contract, holderRankings, 24);
+
+    // Filter out DEX addresses from holders
     const filteredHolders = holders.filter(holder => {
       const address = holder.Holder.Address.toLowerCase();
-      
-      if (knownDEXAddresses.includes(address)) {
-        console.log(`Filtered out DEX address: ${address}`);
-        return false;
-      }
-
-      return true;
+      return !knownDEXAddresses.includes(address);
     });
 
     return filteredHolders;
@@ -258,7 +255,13 @@ export const TIME_RANGES = {
   '24H': 24
 };
 
-export const fetchTransactions = async (holderAddresses, contract, timeRange = 24) => {
+export const fetchTransactions = async (holderAddresses, contract, holderRankings, timeRange = 24) => {
+  // Validate holderRankings is a Map
+  if (!(holderRankings instanceof Map)) {
+    console.error('Invalid holderRankings:', holderRankings);
+    holderRankings = new Map(); // Fallback to empty Map
+  }
+
   const timeAgo = new Date();
   timeAgo.setHours(timeAgo.getHours() - timeRange);
   const timestamp = timeAgo.toISOString();
@@ -332,8 +335,6 @@ export const fetchTransactions = async (holderAddresses, contract, timeRange = 2
       data: { query }
     });
 
-    console.log('Raw transactions data:', JSON.stringify(response.data, null, 2));
-
     if (response.data?.errors) {
       throw new Error(`GraphQL errors: ${JSON.stringify(response.data.errors)}`);
     }
@@ -341,7 +342,7 @@ export const fetchTransactions = async (holderAddresses, contract, timeRange = 2
     const sendingTransfers = response.data?.data?.EVM?.Transfers || [];
     const receivingTransfers = response.data?.data?.EVM?.ReceivingTransfers || [];
     
-    const allTransfers = [...sendingTransfers, ...receivingTransfers]
+    const rawTransfers = [...sendingTransfers, ...receivingTransfers]
       .sort((a, b) => new Date(b.Block.Time) - new Date(a.Block.Time))
       .filter((tx, index, self) => 
         index === self.findIndex(t => 
@@ -350,39 +351,34 @@ export const fetchTransactions = async (holderAddresses, contract, timeRange = 2
           t.Transfer.Sender === tx.Transfer.Sender &&
           t.Transfer.Receiver === tx.Transfer.Receiver
         )
-      )
-      .filter(tx => {
-        const sender = tx.Transfer.Sender.toLowerCase();
-        const receiver = tx.Transfer.Receiver.toLowerCase();
-        
-        // Debug log each transaction check
-        console.log('Checking transaction:', {
-          sender,
-          receiver,
-          senderInDEXList: knownDEXAddresses.includes(sender),
-          receiverInDEXList: knownDEXAddresses.includes(receiver)
-        });
+      );
 
-        const senderIsDEX = knownDEXAddresses.includes(sender);
-        const receiverIsDEX = knownDEXAddresses.includes(receiver);
-        
-        if (senderIsDEX && receiverIsDEX) {
-          console.log('Filtering out DEX-to-DEX transaction:', {
-            sender,
-            receiver
-          });
-          return false;
-        }
-        
-        return true;
-      });
+    const filteredTransfers = rawTransfers.map(tx => {
+      const sender = tx.Transfer.Sender.toLowerCase();
+      const receiver = tx.Transfer.Receiver.toLowerCase();
+      
+      return {
+        ...tx,
+        senderRank: holderRankings.get(sender),
+        receiverRank: holderRankings.get(receiver)
+      };
+    });
 
-    return allTransfers;
+    console.log('Sample transaction with ranks:', {
+      sample: filteredTransfers[0],
+      rankingsSize: holderRankings.size
+    });
+
+    return {
+      raw: rawTransfers,
+      filtered: filteredTransfers
+    };
+
   } catch (error) {
     console.error('Error fetching transactions:', error);
     throw error;
   }
-}; 
+};
 
 const calculatePercentageChange = (amount, balance) => {
   if (!balance) return 100;
